@@ -129,7 +129,7 @@
   </header>
 
   <main id="chat">
-    <div class="msg ai">Привет! Я подключен к Gemini. Напиши свой вопрос.</div>
+    <div class="msg ai">Привет! Я подключен к Gemini 3.8 Flash. Напиши свой вопрос.</div>
   </main>
 
   <form id="input-box">
@@ -151,6 +151,7 @@
     const clearBtn = document.getElementById('clear');
 
     let history = [];
+    let lastInteractionId = null;
 
     input.addEventListener('input', () => {
       input.style.height = 'auto';
@@ -176,6 +177,7 @@
 
     clearBtn.addEventListener('click', () => {
       history = [];
+      lastInteractionId = null;
       chat.innerHTML = '<div class="msg ai">История очищена. Задай новый вопрос.</div>';
     });
 
@@ -197,10 +199,17 @@
         const res = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ messages: history })
+          body: JSON.stringify({
+            prompt: text,
+            messages: history,
+            previousInteractionId: lastInteractionId
+          })
         });
         const data = await res.json();
         const reply = data.reply || data.error || 'Ошибка ответа';
+        if (data.interactionId) {
+          lastInteractionId = data.interactionId;
+        }
         loader.textContent = reply;
         history.push({ role: 'assistant', content: reply });
       } catch {
