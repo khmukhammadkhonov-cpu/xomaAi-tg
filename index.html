@@ -205,15 +205,28 @@
             previousInteractionId: lastInteractionId
           })
         });
-        const data = await res.json();
-        const reply = data.reply || data.error || 'Ошибка ответа';
+
+        const raw = await res.text();
+        let data = {};
+        try {
+          data = raw ? JSON.parse(raw) : {};
+        } catch {
+          data = { error: `Ответ сервера (${res.status}): ${raw.slice(0, 120)}` };
+        }
+
+        if (!res.ok) {
+          loader.textContent = data.error || `Ошибка сервера (${res.status})`;
+          return;
+        }
+
+        const reply = data.reply || data.error || 'Пустой ответ';
         if (data.interactionId) {
           lastInteractionId = data.interactionId;
         }
         loader.textContent = reply;
         history.push({ role: 'assistant', content: reply });
-      } catch {
-        loader.textContent = 'Ошибка соединения с сервером.';
+      } catch (err) {
+        loader.textContent = `Ошибка соединения с сервером: ${err?.message || 'проверь сеть'}`;
       } finally {
         chat.scrollTop = chat.scrollHeight;
       }
