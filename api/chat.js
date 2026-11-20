@@ -4,46 +4,78 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { messages } = req.body;
+    const { prompt, messages, previousInteractionId } = req.body || {};
     const apiKey = process.env.GEMINI_API_KEY;
 
     if (!apiKey) {
       return res.status(500).json({ error: 'Не задан GEMINI_API_KEY в Vercel' });
     }
 
-    const contents = (messages || []).map((m) => ({
-      role: m.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: m.content }]
-    }));
+    const lastUserMessage =
+      typeof prompt === 'string' && prompt.trim()
+        ? prompt.trim()
+        : Array.isArray(messages)
+          ? [...messages].reverse().find((m) => m.role === 'user')?.content?.trim()
+          : '';
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`;
+    if (!lastUserMessage) {
+      return res.status(400).json({ error: 'Пустое сообщение' });
+    }
 
-    const response = await fetch(url, {
+    const payload = {
+      model: 'gemini-3.8-flash',
+      input:
+        previousInteractionId || !Array.isArray(messages) || messages.length <= 1
+          ? lastUserMessage
+          : messages.map((m) => `${m.role === 'assistant' ? 'Ассистент' : 'Пользователь'}: ${m.content}`).join('\n'),
+      system_instruction: 'Ты дружелюбный и полезный AI-ассистент внутри Telegram. Отвечай четко и по делу.',
+      generation_config: {
+        thinking_level: 'medium'
+      }
+    };
+
+    if (previousInteractionId) {
+      payload.previous_interaction_id = previousInteractionId;
+    }
+
+    const response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: {
-          parts: [{ text: 'Ты дружелюбный и полезный AI-ассистент внутри Telegram. Отвечай четко и по делу.' }]
-        },
-        contents
-      })
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey
+      },
+      body: JSON.stringify(payload)
     });
 
     const data = await response.json();
 
     if (!response.ok) {
       return res.status(response.status).json({
-        error: data.error?.message || 'Ошибка запроса к Gemini API'
+        error: data.error?.message || 'Ошибка запроса к Gemini Interactions API'
       });
     }
 
-    const reply =
-      data.candidates?.[0]?.content?.parts
-        ?.map((p) => p.text)
-        .filter(Boolean)
-        .join('\n') || 'Пустой ответ от модели';
+    const textFromOutputs = Array.isArray(data.outputs)
+      ? data.outputs
+          .map((item) => item?.text || item?.content || '')
+          .filter(Boolean)
+          .join('\n')
+      : '';
 
-    return res.status(200).json({ reply });
+    const textFromSteps = Array.isArray(data.steps)
+      ? data.steps
+          .filter((s) => s?.type === 'model_output')
+          .map((s) => s?.content || s?.text || '')
+          .filter(Boolean)
+          .join('\n')
+      : '';
+
+    const reply = data.output_text || textFromOutputs || textFromSteps || 'Пустой ответ от модели';
+
+    return res.status(200).json({
+      reply,
+      interactionId: data.id || null
+    });
   } catch (err) {
     return res.status(500).json({ error: err.message || 'Внутренняя ошибка сервера' });
   }
