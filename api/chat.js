@@ -3,6 +3,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
+  const startedAt = Date.now();
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 7500);
 
@@ -12,6 +13,7 @@ export default async function handler(req, res) {
 
     if (!apiKey) {
       clearTimeout(timeoutId);
+      console.error('[chat] Missing GEMINI_API_KEY');
       return res.status(500).json({ error: 'Не задан GEMINI_API_KEY в Vercel' });
     }
 
@@ -33,15 +35,17 @@ export default async function handler(req, res) {
         previousInteractionId || !Array.isArray(messages) || messages.length <= 1
           ? lastUserMessage
           : messages
-              .slice(-4)
+              .slice(-3)
               .map((m) => `${m.role === 'assistant' ? 'Ассистент' : 'Пользователь'}: ${m.content}`)
               .join('\n'),
-      system_instruction: 'Отвечай максимально кратко, по делу и на русском языке.'
+      system_instruction: 'Отвечай максимально кратко и по делу.'
     };
 
     if (previousInteractionId) {
       payload.previous_interaction_id = previousInteractionId;
     }
+
+    console.log('[chat] Sending request to Gemini Interactions API...');
 
     const response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
       method: 'POST',
@@ -54,19 +58,21 @@ export default async function handler(req, res) {
     });
 
     clearTimeout(timeoutId);
+    const elapsedMs = Date.now() - startedAt;
 
     const rawText = await response.text();
     let data = {};
     try {
       data = rawText ? JSON.parse(rawText) : {};
     } catch {
+      console.error(`[chat] Non-JSON response in ${elapsedMs}ms:`, rawText.slice(0, 200));
       return res.status(502).json({ error: 'Некорректный ответ от Gemini API' });
     }
 
     if (!response.ok) {
-      return res.status(response.status).json({
-        error: data.error?.message || `Ошибка Gemini API (${response.status})`
-      });
+      const apiErr = data.error?.message || `Ошибка Gemini API (${response.status})`;
+      console.error(`[chat] Gemini error ${response.status} in ${elapsedMs}ms:`, apiErr);
+      return res.status(response.status).json({ error: apiErr });
     }
 
     const textFromOutputs = Array.isArray(data.outputs)
@@ -85,6 +91,7 @@ export default async function handler(req, res) {
       : '';
 
     const reply = data.output_text || textFromOutputs || textFromSteps || 'Пустой ответ от модели';
+    console.log(`[chat] Success in ${elapsedMs}ms, interactionId=${data.id || 'none'}`);
 
     return res.status(200).json({
       reply,
@@ -92,11 +99,16 @@ export default async function handler(req, res) {
     });
   } catch (err) {
     clearTimeout(timeoutId);
+    const elapsedMs = Date.now() - startedAt;
+
     if (err?.name === 'AbortError') {
+      console.error(`[chat] Aborted after ${elapsedMs}ms`);
       return res.status(504).json({
-        error: 'Google не успел ответить за 7.5 сек. Попробуй отправить сообщение еще раз.'
+        error: `Google не ответил за ${elapsedMs} мс. Попробуй еще раз.`
       });
     }
+
+    console.error(`[chat] Unexpected error after ${elapsedMs}ms:`, err?.message || err);
     return res.status(500).json({ error: err?.message || 'Внутренняя ошибка сервера' });
   }
 }
